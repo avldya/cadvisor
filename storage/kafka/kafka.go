@@ -15,8 +15,12 @@
 package kafka
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
+	"io/ioutil"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -31,11 +35,16 @@ import (
 
 func init() {
 	storage.RegisterStorageDriver("kafka", new)
+	kafka.Logger = log.New(os.Stderr, "[kafka]", log.LstdFlags)
 }
 
 var (
-	brokers = flag.String("storage_driver_kafka_broker_list", "localhost:9092", "kafka broker(s) csv")
-	topic   = flag.String("storage_driver_kafka_topic", "stats", "kafka topic")
+	brokers   = flag.String("storage_driver_kafka_broker_list", "localhost:9092", "kafka broker(s) csv")
+	topic     = flag.String("storage_driver_kafka_topic", "stats", "kafka topic")
+	certFile  = flag.String("storage_driver_kafka_ssl_cert", "", "optional certificate file for TLS client authentication")
+	keyFile   = flag.String("storage_driver_kafka_ssl_key", "", "optional key file for TLS client authentication")
+	caFile    = flag.String("storage_driver_kafka_ssl_ca", "", "optional certificate authority file for TLS client authentication")
+	verifySSL = flag.Bool("storage_driver_kafka_ssl_verify", true, "verify ssl certificate chain")
 )
 
 type kafkaStorage struct {
@@ -53,11 +62,11 @@ type detailSpec struct {
 	ContainerStats  *info.ContainerStats `json:"container_stats,omitempty"`
 }
 
-func (driver *kafkaStorage) infoToDetailSpec(ref info.ContainerReference, stats *info.ContainerStats) *detailSpec {
+func (driver *kafkaStorage) infoToDetailSpec(cInfo *info.ContainerInfo, stats *info.ContainerStats) *detailSpec {
 	timestamp := time.Now()
-	containerID := ref.Id
-	containerLabels := ref.Labels
-	containerName := container.GetPreferredName(ref)
+	containerID := cInfo.ContainerReference.Id
+	containerLabels := cInfo.Spec.Labels
+	containerName := container.GetPreferredName(cInfo.ContainerReference)
 
 	detail := &detailSpec{
 		Timestamp:       timestamp,
@@ -70,8 +79,8 @@ func (driver *kafkaStorage) infoToDetailSpec(ref info.ContainerReference, stats 
 	return detail
 }
 
-func (driver *kafkaStorage) AddStats(ref info.ContainerReference, stats *info.ContainerStats) error {
-	detail := driver.infoToDetailSpec(ref, stats)
+func (driver *kafkaStorage) AddStats(cInfo *info.ContainerInfo, stats *info.ContainerStats) error {
+	detail := driver.infoToDetailSpec(cInfo, stats)
 	b, err := json.Marshal(detail)
 
 	driver.producer.Input() <- &kafka.ProducerMessage{
@@ -94,12 +103,47 @@ func new() (storage.StorageDriver, error) {
 	return newStorage(machineName)
 }
 
+func generateTLSConfig() (*tls.Config, error) {
+	if *certFile != "" && *keyFile != "" && *caFile != "" {
+		cert, err := tls.LoadX509KeyPair(*certFile, *keyFile)
+		if err != nil {
+			return nil, err
+		}
+
+		caCert, err := ioutil.ReadFile(*caFile)
+		if err != nil {
+			return nil, err
+		}
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+
+		return &tls.Config{
+			Certificates:       []tls.Certificate{cert},
+			RootCAs:            caCertPool,
+			InsecureSkipVerify: *verifySSL,
+		}, nil
+	}
+
+	return nil, nil
+}
+
 func newStorage(machineName string) (storage.StorageDriver, error) {
 	config := kafka.NewConfig()
+
+	tlsConfig, err := generateTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	if tlsConfig != nil {
+		config.Net.TLS.Enable = true
+		config.Net.TLS.Config = tlsConfig
+	}
+
 	config.Producer.RequiredAcks = kafka.WaitForAll
 
 	brokerList := strings.Split(*brokers, ",")
-	glog.V(4).Infof("Kafka brokers:%q", brokers)
+	glog.V(4).Infof("Kafka brokers:%q", *brokers)
 
 	producer, err := kafka.NewAsyncProducer(brokerList, config)
 	if err != nil {

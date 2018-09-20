@@ -59,6 +59,7 @@ type pageData struct {
 	NetworkAvailable       bool
 	FsAvailable            bool
 	CustomMetricsAvailable bool
+	SubcontainersAvailable bool
 	Root                   string
 	DockerStatus           []keyVal
 	DockerDriverStatus     []keyVal
@@ -76,37 +77,25 @@ func init() {
 
 func containerHandlerNoAuth(containerManager manager.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		err := serveContainersPage(containerManager, w, r.URL)
-		if err != nil {
-			fmt.Fprintf(w, "%s", err)
-		}
+		serveContainersPage(containerManager, w, r.URL)
 	}
 }
 
 func containerHandler(containerManager manager.Manager) auth.AuthenticatedHandlerFunc {
 	return func(w http.ResponseWriter, r *auth.AuthenticatedRequest) {
-		err := serveContainersPage(containerManager, w, r.URL)
-		if err != nil {
-			fmt.Fprintf(w, "%s", err)
-		}
+		serveContainersPage(containerManager, w, r.URL)
 	}
 }
 
 func dockerHandlerNoAuth(containerManager manager.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		err := serveDockerPage(containerManager, w, r.URL)
-		if err != nil {
-			fmt.Fprintf(w, "%s", err)
-		}
+		serveDockerPage(containerManager, w, r.URL)
 	}
 }
 
 func dockerHandler(containerManager manager.Manager) auth.AuthenticatedHandlerFunc {
 	return func(w http.ResponseWriter, r *auth.AuthenticatedRequest) {
-		err := serveDockerPage(containerManager, w, r.URL)
-		if err != nil {
-			fmt.Fprintf(w, "%s", err)
-		}
+		serveDockerPage(containerManager, w, r.URL)
 	}
 }
 

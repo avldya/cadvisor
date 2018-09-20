@@ -361,7 +361,10 @@ func (self *version2_0) HandleRequest(requestType string, request []string, m ma
 		glog.V(4).Infof("Api - Stats: Looking for stats for container %q, options %+v", name, opt)
 		infos, err := m.GetRequestedContainersInfo(name, opt)
 		if err != nil {
-			return err
+			if len(infos) == 0 {
+				return err
+			}
+			glog.Errorf("Error calling GetRequestedContainersInfo: %v", err)
 		}
 		contStats := make(map[string][]v2.DeprecatedContainerStats, 0)
 		for name, cinfo := range infos {
@@ -417,23 +420,30 @@ func (self *version2_0) HandleRequest(requestType string, request []string, m ma
 		}
 		return writeResult(specs, w)
 	case storageApi:
-		var err error
-		fi := []v2.FsInfo{}
 		label := r.URL.Query().Get("label")
-		if len(label) == 0 {
-			// Get all global filesystems info.
-			fi, err = m.GetFsInfo("")
+		uuid := r.URL.Query().Get("uuid")
+		switch {
+		case uuid != "":
+			fi, err := m.GetFsInfoByFsUUID(uuid)
 			if err != nil {
 				return err
 			}
-		} else {
+			return writeResult(fi, w)
+		case label != "":
 			// Get a specific label.
-			fi, err = m.GetFsInfo(label)
+			fi, err := m.GetFsInfo(label)
 			if err != nil {
 				return err
 			}
+			return writeResult(fi, w)
+		default:
+			// Get all global filesystems info.
+			fi, err := m.GetFsInfo("")
+			if err != nil {
+				return err
+			}
+			return writeResult(fi, w)
 		}
-		return writeResult(fi, w)
 	case eventsApi:
 		return handleEventRequest(request, m, w, r)
 	case psApi:
@@ -482,7 +492,10 @@ func (self *version2_1) HandleRequest(requestType string, request []string, m ma
 		glog.V(4).Infof("Api - MachineStats(%v)", request)
 		cont, err := m.GetRequestedContainersInfo("/", opt)
 		if err != nil {
-			return err
+			if len(cont) == 0 {
+				return err
+			}
+			glog.Errorf("Error calling GetRequestedContainersInfo: %v", err)
 		}
 		return writeResult(v2.MachineStatsFromV1(cont["/"]), w)
 	case statsApi:
@@ -490,7 +503,10 @@ func (self *version2_1) HandleRequest(requestType string, request []string, m ma
 		glog.V(4).Infof("Api - Stats: Looking for stats for container %q, options %+v", name, opt)
 		conts, err := m.GetRequestedContainersInfo(name, opt)
 		if err != nil {
-			return err
+			if len(conts) == 0 {
+				return err
+			}
+			glog.Errorf("Error calling GetRequestedContainersInfo: %v", err)
 		}
 		contStats := make(map[string]v2.ContainerInfo, len(conts))
 		for name, cont := range conts {
@@ -500,7 +516,7 @@ func (self *version2_1) HandleRequest(requestType string, request []string, m ma
 			}
 			contStats[name] = v2.ContainerInfo{
 				Spec:  v2.ContainerSpecFromV1(&cont.Spec, cont.Aliases, cont.Namespace),
-				Stats: v2.ContainerStatsFromV1(&cont.Spec, cont.Stats),
+				Stats: v2.ContainerStatsFromV1(name, &cont.Spec, cont.Stats),
 			}
 		}
 		return writeResult(contStats, w)

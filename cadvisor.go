@@ -32,14 +32,16 @@ import (
 	"github.com/google/cadvisor/utils/sysfs"
 	"github.com/google/cadvisor/version"
 
+	"crypto/tls"
+
 	"github.com/golang/glog"
+	"github.com/google/cadvisor/metrics"
 )
 
 var argIp = flag.String("listen_ip", "", "IP to listen on, defaults to all IPs")
 var argPort = flag.Int("port", 8080, "port to listen")
 var maxProcs = flag.Int("max_procs", 0, "max number of CPUs that can be used simultaneously. Less than 1 for default (number of cores).")
 
-var argDbDriver = flag.String("storage_driver", "", "storage driver to use. Data is always cached shortly in memory, this controls where data is pushed besides the local cache. Empty means none. Options are: <empty> (default), bigquery, influxdb, and kafka")
 var versionFlag = flag.Bool("version", false, "print cAdvisor version and exit")
 
 var httpAuthFile = flag.String("http_auth_file", "", "HTTP auth file for the web UI")
@@ -54,16 +56,28 @@ var allowDynamicHousekeeping = flag.Bool("allow_dynamic_housekeeping", true, "Wh
 
 var enableProfiling = flag.Bool("profiling", false, "Enable profiling via web interface host:port/debug/pprof/")
 
+var collectorCert = flag.String("collector_cert", "", "Collector's certificate, exposed to endpoints for certificate based authentication.")
+var collectorKey = flag.String("collector_key", "", "Key for the collector's certificate")
+
+var storeContainerLabels = flag.Bool("store_container_labels", true, "convert container labels and environment variables into labels on prometheus metrics for each container. If flag set to false, then only metrics exported are container name, first alias, and image name")
+
 var (
 	// Metrics to be ignored.
 	// Tcp metrics are ignored by default.
-	ignoreMetrics metricSetValue = metricSetValue{container.MetricSet{container.NetworkTcpUsageMetrics: struct{}{}}}
+	ignoreMetrics metricSetValue = metricSetValue{container.MetricSet{
+		container.NetworkTcpUsageMetrics:  struct{}{},
+		container.NetworkUdpUsageMetrics:  struct{}{},
+		container.ProcessSchedulerMetrics: struct{}{},
+	}}
 
 	// List of metrics that can be ignored.
 	ignoreWhitelist = container.MetricSet{
-		container.DiskUsageMetrics:       struct{}{},
-		container.NetworkUsageMetrics:    struct{}{},
-		container.NetworkTcpUsageMetrics: struct{}{},
+		container.DiskUsageMetrics:        struct{}{},
+		container.NetworkUsageMetrics:     struct{}{},
+		container.NetworkTcpUsageMetrics:  struct{}{},
+		container.NetworkUdpUsageMetrics:  struct{}{},
+		container.PerCpuUsageMetrics:      struct{}{},
+		container.ProcessSchedulerMetrics: struct{}{},
 	}
 )
 
@@ -95,7 +109,10 @@ func (ml *metricSetValue) Set(value string) error {
 }
 
 func init() {
-	flag.Var(&ignoreMetrics, "disable_metrics", "comma-separated list of `metrics` to be disabled. Options are 'disk', 'network', 'tcp'. Note: tcp is disabled by default due to high CPU usage.")
+	flag.Var(&ignoreMetrics, "disable_metrics", "comma-separated list of `metrics` to be disabled. Options are 'disk', 'network', 'tcp', 'udp', 'percpu'. Note: tcp and udp are disabled by default due to high CPU usage.")
+
+	// Default logging verbosity to V(2)
+	flag.Set("v", "2")
 }
 
 func main() {
@@ -107,19 +124,20 @@ func main() {
 		os.Exit(0)
 	}
 
+	includedMetrics := toIncludedMetrics(ignoreMetrics.MetricSet)
+
 	setMaxProcs()
 
-	memoryStorage, err := NewMemoryStorage(*argDbDriver)
+	memoryStorage, err := NewMemoryStorage()
 	if err != nil {
-		glog.Fatalf("Failed to connect to database: %s", err)
+		glog.Fatalf("Failed to initialize storage driver: %s", err)
 	}
 
-	sysFs, err := sysfs.NewRealSysFs()
-	if err != nil {
-		glog.Fatalf("Failed to create a system interface: %s", err)
-	}
+	sysFs := sysfs.NewRealSysFs()
 
-	containerManager, err := manager.New(memoryStorage, sysFs, *maxHousekeepingInterval, *allowDynamicHousekeeping, ignoreMetrics.MetricSet)
+	collectorHttpClient := createCollectorHttpClient(*collectorCert, *collectorKey)
+
+	containerManager, err := manager.New(memoryStorage, sysFs, *maxHousekeepingInterval, *allowDynamicHousekeeping, includedMetrics, &collectorHttpClient, []string{"/"})
 	if err != nil {
 		glog.Fatalf("Failed to create a Container Manager: %s", err)
 	}
@@ -139,7 +157,11 @@ func main() {
 		glog.Fatalf("Failed to register HTTP handlers: %v", err)
 	}
 
-	cadvisorhttp.RegisterPrometheusHandler(mux, containerManager, *prometheusEndpoint, nil)
+	containerLabelFunc := metrics.DefaultContainerLabels
+	if !*storeContainerLabels {
+		containerLabelFunc = metrics.BaseContainerLabels
+	}
+	cadvisorhttp.RegisterPrometheusHandler(mux, containerManager, *prometheusEndpoint, containerLabelFunc, includedMetrics)
 
 	// Start the manager.
 	if err := containerManager.Start(); err != nil {
@@ -149,7 +171,7 @@ func main() {
 	// Install signal handler.
 	installSignalHandler(containerManager)
 
-	glog.Infof("Starting cAdvisor version: %s-%s on port %d", version.Info["version"], version.Info["revision"], *argPort)
+	glog.V(1).Infof("Starting cAdvisor version: %s-%s on port %d", version.Info["version"], version.Info["revision"], *argPort)
 
 	addr := fmt.Sprintf("%s:%d", *argIp, *argPort)
 	glog.Fatal(http.ListenAndServe(addr, mux))
@@ -186,4 +208,54 @@ func installSignalHandler(containerManager manager.Manager) {
 		glog.Infof("Exiting given signal: %v", sig)
 		os.Exit(0)
 	}()
+}
+
+func createCollectorHttpClient(collectorCert, collectorKey string) http.Client {
+	//Enable accessing insecure endpoints. We should be able to access metrics from any endpoint
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: true,
+	}
+
+	if collectorCert != "" {
+		if collectorKey == "" {
+			glog.Fatal("The collector_key value must be specified if the collector_cert value is set.")
+		}
+		cert, err := tls.LoadX509KeyPair(collectorCert, collectorKey)
+		if err != nil {
+			glog.Fatalf("Failed to use the collector certificate and key: %s", err)
+		}
+
+		tlsConfig.Certificates = []tls.Certificate{cert}
+		tlsConfig.BuildNameToCertificate()
+	}
+
+	transport := &http.Transport{
+		TLSClientConfig: tlsConfig,
+	}
+
+	return http.Client{Transport: transport}
+}
+
+func toIncludedMetrics(ignoreMetrics container.MetricSet) container.MetricSet {
+	set := container.MetricSet{}
+	allMetrics := []container.MetricKind{
+		container.CpuUsageMetrics,
+		container.ProcessSchedulerMetrics,
+		container.PerCpuUsageMetrics,
+		container.MemoryUsageMetrics,
+		container.CpuLoadMetrics,
+		container.DiskIOMetrics,
+		container.DiskUsageMetrics,
+		container.NetworkUsageMetrics,
+		container.NetworkTcpUsageMetrics,
+		container.NetworkUdpUsageMetrics,
+		container.AcceleratorUsageMetrics,
+		container.AppMetrics,
+	}
+	for _, metric := range allMetrics {
+		if !ignoreMetrics.Has(metric) {
+			set[metric] = struct{}{}
+		}
+	}
+	return set
 }

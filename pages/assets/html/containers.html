@@ -17,8 +17,9 @@
 <html>
   <head>
     <title>cAdvisor - {{.DisplayName}}</title>
+    <script src="{{.Root}}static/popper.min.js"></script>
     <!-- Latest compiled and minified CSS -->
-    <link rel="stylesheet" href="{{.Root}}static/bootstrap-3.1.1.min.css">
+    <link rel="stylesheet" href="{{.Root}}static/bootstrap-4.0.0-beta.2.min.css">
 
     <!-- Optional theme -->
     <link rel="stylesheet" href="{{.Root}}static/bootstrap-theme-3.1.1.min.css">
@@ -26,8 +27,8 @@
     <link rel="stylesheet" href="{{.Root}}static/containers.css">
 
     <!-- Latest compiled and minified JavaScript -->
-    <script src="{{.Root}}static/jquery-1.10.2.min.js"></script>
-    <script src="{{.Root}}static/bootstrap-3.1.1.min.js"></script>
+    <script src="{{.Root}}static/jquery-3.0.0.min.js"></script>
+    <script src="{{.Root}}static/bootstrap-4.0.0-beta.2.min.js"></script>
     <script type="text/javascript" src="{{.Root}}static/google-jsapi.js"></script>
 
     <script type="text/javascript" src="{{.Root}}static/containers.js"></script>
@@ -231,6 +232,33 @@
 	  </div>
 	</div>
 	{{end}}
+        {{if .SubcontainersAvailable}}
+	<div class="panel panel-primary">
+          <div class="panel-heading">
+            <h3 class="panel-title">Subcontainers</h3>
+          </div>
+          <div class="panel-body">
+            <h4>Top CPU Usage:
+              <input id="cpu-per-subcontainer-display-count"
+                     class="subcontainer-display-input"
+                     value=10>
+            </h4>
+            <div id="cpu-per-subcontainer-usage-chart">
+            </div>
+          </div>
+          <div class="panel-body">
+            <h4>Top Memory Usage:
+              <input id="memory-per-subcontainer-display-count"
+                     class="subcontainer-display-input"
+                     value=10>
+            </h4>
+            <span class="subcontroller-display-block">
+            <span>
+            <div id="memory-per-subcontainer-usage-chart">
+            </div>
+          </div>
+        </div>
+        {{end}}
       </div>
       {{end}}
     </div>

@@ -64,14 +64,14 @@ func (self *redisStorage) defaultReadyToFlush() bool {
 	return time.Since(self.lastWrite) >= self.bufferDuration
 }
 
-//We must add some default params (for example: MachineName,ContainerName...)because containerStats do not include them
-func (self *redisStorage) containerStatsAndDefaultValues(ref info.ContainerReference, stats *info.ContainerStats) *detailSpec {
+// We must add some default params (for example: MachineName,ContainerName...)because containerStats do not include them
+func (self *redisStorage) containerStatsAndDefaultValues(cInfo *info.ContainerInfo, stats *info.ContainerStats) *detailSpec {
 	timestamp := stats.Timestamp.UnixNano() / 1E3
 	var containerName string
-	if len(ref.Aliases) > 0 {
-		containerName = ref.Aliases[0]
+	if len(cInfo.ContainerReference.Aliases) > 0 {
+		containerName = cInfo.ContainerReference.Aliases[0]
 	} else {
-		containerName = ref.Name
+		containerName = cInfo.ContainerReference.Name
 	}
 	detail := &detailSpec{
 		Timestamp:      timestamp,
@@ -82,8 +82,8 @@ func (self *redisStorage) containerStatsAndDefaultValues(ref info.ContainerRefer
 	return detail
 }
 
-//Push the data into redis
-func (self *redisStorage) AddStats(ref info.ContainerReference, stats *info.ContainerStats) error {
+// Push the data into redis
+func (self *redisStorage) AddStats(cInfo *info.ContainerInfo, stats *info.ContainerStats) error {
 	if stats == nil {
 		return nil
 	}
@@ -93,8 +93,8 @@ func (self *redisStorage) AddStats(ref info.ContainerReference, stats *info.Cont
 		self.lock.Lock()
 		defer self.lock.Unlock()
 		// Add some default params based on containerStats
-		detail := self.containerStatsAndDefaultValues(ref, stats)
-		//To json
+		detail := self.containerStatsAndDefaultValues(cInfo, stats)
+		// To json
 		b, _ := json.Marshal(detail)
 		if self.readyToFlush() {
 			seriesToFlush = b
@@ -102,7 +102,7 @@ func (self *redisStorage) AddStats(ref info.ContainerReference, stats *info.Cont
 		}
 	}()
 	if len(seriesToFlush) > 0 {
-		//We use redis's "LPUSH" to push the data to the redis
+		// We use redis's "LPUSH" to push the data to the redis
 		self.conn.Send("LPUSH", self.redisKey, seriesToFlush)
 	}
 	return nil

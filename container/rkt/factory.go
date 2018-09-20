@@ -16,12 +16,12 @@ package rkt
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/google/cadvisor/container"
 	"github.com/google/cadvisor/container/libcontainer"
 	"github.com/google/cadvisor/fs"
 	info "github.com/google/cadvisor/info/v1"
+	"github.com/google/cadvisor/manager/watcher"
 
 	"github.com/golang/glog"
 )
@@ -35,7 +35,7 @@ type rktFactory struct {
 
 	fsInfo fs.FsInfo
 
-	ignoreMetrics container.MetricSet
+	includedMetrics container.MetricSet
 
 	rktPath string
 }
@@ -54,25 +54,20 @@ func (self *rktFactory) NewContainerHandler(name string, inHostNamespace bool) (
 	if !inHostNamespace {
 		rootFs = "/rootfs"
 	}
-	return newRktContainerHandler(name, client, self.rktPath, self.cgroupSubsystems, self.machineInfoFactory, self.fsInfo, rootFs, self.ignoreMetrics)
+	return newRktContainerHandler(name, client, self.rktPath, self.cgroupSubsystems, self.machineInfoFactory, self.fsInfo, rootFs, self.includedMetrics)
 }
 
 func (self *rktFactory) CanHandleAndAccept(name string) (bool, bool, error) {
-	// will ignore all cgroup names that don't either correspond to the machine.slice that is the pod or the containers that belong to the pod
-	// only works for machined rkt pods at the moment
+	accept, err := verifyPod(name)
 
-	if strings.HasPrefix(name, "/machine.slice/machine-rkt\\x2d") {
-		accept, err := verifyName(name)
-		return accept, accept, err
-	}
-	return false, false, fmt.Errorf("%s not handled by rkt handler", name)
+	return accept, accept, err
 }
 
 func (self *rktFactory) DebugInfo() map[string][]string {
 	return map[string][]string{}
 }
 
-func Register(machineInfoFactory info.MachineInfoFactory, fsInfo fs.FsInfo, ignoreMetrics container.MetricSet) error {
+func Register(machineInfoFactory info.MachineInfoFactory, fsInfo fs.FsInfo, includedMetrics container.MetricSet) error {
 	_, err := Client()
 	if err != nil {
 		return fmt.Errorf("unable to communicate with Rkt api service: %v", err)
@@ -91,14 +86,14 @@ func Register(machineInfoFactory info.MachineInfoFactory, fsInfo fs.FsInfo, igno
 		return fmt.Errorf("failed to find supported cgroup mounts for the raw factory")
 	}
 
-	glog.Infof("Registering Rkt factory")
+	glog.V(1).Infof("Registering Rkt factory")
 	factory := &rktFactory{
 		machineInfoFactory: machineInfoFactory,
 		fsInfo:             fsInfo,
 		cgroupSubsystems:   &cgroupSubsystems,
-		ignoreMetrics:      ignoreMetrics,
+		includedMetrics:    includedMetrics,
 		rktPath:            rktPath,
 	}
-	container.RegisterContainerHandlerFactory(factory)
+	container.RegisterContainerHandlerFactory(factory, []watcher.ContainerWatchSource{watcher.Rkt})
 	return nil
 }

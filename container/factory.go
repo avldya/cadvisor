@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/google/cadvisor/manager/watcher"
+
 	"github.com/golang/glog"
 )
 
@@ -39,14 +41,18 @@ type ContainerHandlerFactory interface {
 type MetricKind string
 
 const (
-	CpuUsageMetrics        MetricKind = "cpu"
-	MemoryUsageMetrics     MetricKind = "memory"
-	CpuLoadMetrics         MetricKind = "cpuLoad"
-	DiskIOMetrics          MetricKind = "diskIO"
-	DiskUsageMetrics       MetricKind = "disk"
-	NetworkUsageMetrics    MetricKind = "network"
-	NetworkTcpUsageMetrics MetricKind = "tcp"
-	AppMetrics             MetricKind = "app"
+	CpuUsageMetrics         MetricKind = "cpu"
+	ProcessSchedulerMetrics MetricKind = "sched"
+	PerCpuUsageMetrics      MetricKind = "percpu"
+	MemoryUsageMetrics      MetricKind = "memory"
+	CpuLoadMetrics          MetricKind = "cpuLoad"
+	DiskIOMetrics           MetricKind = "diskIO"
+	DiskUsageMetrics        MetricKind = "disk"
+	NetworkUsageMetrics     MetricKind = "network"
+	NetworkTcpUsageMetrics  MetricKind = "tcp"
+	NetworkUdpUsageMetrics  MetricKind = "udp"
+	AcceleratorUsageMetrics MetricKind = "accelerator"
+	AppMetrics              MetricKind = "app"
 )
 
 func (mk MetricKind) String() string {
@@ -67,17 +73,19 @@ func (ms MetricSet) Add(mk MetricKind) {
 // TODO(vmarmol): Consider not making this global.
 // Global list of factories.
 var (
-	factories     []ContainerHandlerFactory
+	factories     = map[watcher.ContainerWatchSource][]ContainerHandlerFactory{}
 	factoriesLock sync.RWMutex
 )
 
 // Register a ContainerHandlerFactory. These should be registered from least general to most general
 // as they will be asked in order whether they can handle a particular container.
-func RegisterContainerHandlerFactory(factory ContainerHandlerFactory) {
+func RegisterContainerHandlerFactory(factory ContainerHandlerFactory, watchTypes []watcher.ContainerWatchSource) {
 	factoriesLock.Lock()
 	defer factoriesLock.Unlock()
 
-	factories = append(factories, factory)
+	for _, watchType := range watchTypes {
+		factories[watchType] = append(factories[watchType], factory)
+	}
 }
 
 // Returns whether there are any container handler factories registered.
@@ -89,12 +97,12 @@ func HasFactories() bool {
 }
 
 // Create a new ContainerHandler for the specified container.
-func NewContainerHandler(name string, inHostNamespace bool) (ContainerHandler, bool, error) {
+func NewContainerHandler(name string, watchType watcher.ContainerWatchSource, inHostNamespace bool) (ContainerHandler, bool, error) {
 	factoriesLock.RLock()
 	defer factoriesLock.RUnlock()
 
 	// Create the ContainerHandler with the first factory that supports it.
-	for _, factory := range factories {
+	for _, factory := range factories[watchType] {
 		canHandle, canAccept, err := factory.CanHandleAndAccept(name)
 		if err != nil {
 			glog.V(4).Infof("Error trying to work out if we can handle %s: %v", name, err)
@@ -120,7 +128,7 @@ func ClearContainerHandlerFactories() {
 	factoriesLock.Lock()
 	defer factoriesLock.Unlock()
 
-	factories = make([]ContainerHandlerFactory, 0, 4)
+	factories = map[watcher.ContainerWatchSource][]ContainerHandlerFactory{}
 }
 
 func DebugInfo() map[string][]string {
@@ -129,9 +137,11 @@ func DebugInfo() map[string][]string {
 
 	// Get debug information for all factories.
 	out := make(map[string][]string)
-	for _, factory := range factories {
-		for k, v := range factory.DebugInfo() {
-			out[k] = v
+	for _, factoriesSlice := range factories {
+		for _, factory := range factoriesSlice {
+			for k, v := range factory.DebugInfo() {
+				out[k] = v
+			}
 		}
 	}
 	return out
